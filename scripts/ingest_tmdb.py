@@ -4,7 +4,14 @@ from app.db.neo4j import run
 from app.ingestion.tmdb import TMDBClient
 
 
-async def ingest_movie(movie: dict):
+async def ingest_movie(movie: dict) -> None:
+    """
+    Ingests a single movie node and its genre relationships.
+
+    This function is idempotent:
+    - MERGE ensures no duplicate Movie nodes
+    - Genres are normalized and reused
+    """
     run(
         """
         MERGE (m:Movie {tmdb_id: $tmdb_id})
@@ -27,6 +34,7 @@ async def ingest_movie(movie: dict):
         },
     )
 
+    # Normalize genres and connect them to the movie
     for genre in movie.get("genres", []):
         run(
             """
@@ -35,22 +43,89 @@ async def ingest_movie(movie: dict):
             MATCH (m:Movie {tmdb_id: $tmdb_id})
             MERGE (m)-[:HAS_GENRE]->(g)
             """,
-            {"name": genre["name"], "tmdb_id": movie["id"]},
+            {
+                "name": genre["name"],
+                "tmdb_id": movie["id"],
+            },
         )
 
 
-async def main():
-    client = TMDBClient()
-    pages = 3
+async def ingest_credits(movie_id: int, credits: dict) -> None:
+    """
+    Ingests people and their relationships to a movie.
 
-    for page in range(1, pages + 1):
+    Design choices:
+    - All people are modeled as (:Person)
+    - Roles are expressed via relationships:
+        (:Person)-[:ACTED_IN]->(:Movie)
+        (:Person)-[:DIRECTED]->(:Movie)
+    """
+
+    # Cast → ACTED_IN
+    for cast in credits.get("cast", []):
+        run(
+            """
+            MERGE (p:Person {tmdb_id: $id})
+            SET p.name = $name
+            WITH p
+            MATCH (m:Movie {tmdb_id: $movie_id})
+            MERGE (p)-[:ACTED_IN]->(m)
+            """,
+            {
+                "id": cast["id"],
+                "name": cast["name"],
+                "movie_id": movie_id,
+            },
+        )
+
+    # Crew → DIRECTED (only directors for now)
+    for crew in credits.get("crew", []):
+        if crew.get("job") == "Director":
+            run(
+                """
+                MERGE (p:Person {tmdb_id: $id})
+                SET p.name = $name
+                WITH p
+                MATCH (m:Movie {tmdb_id: $movie_id})
+                MERGE (p)-[:DIRECTED]->(m)
+                """,
+                {
+                    "id": crew["id"],
+                    "name": crew["name"],
+                    "movie_id": movie_id,
+                },
+            )
+
+
+async def main() -> None:
+    """
+    Main ingestion entry point.
+
+    Flow:
+    - Iterate over a small number of TMDB 'popular' pages
+    - For each movie:
+        1. Fetch full movie details
+        2. Ingest Movie + Genre structure
+        3. Fetch credits
+        4. Ingest People + relationships
+    """
+    client = TMDBClient()
+    pages_to_ingest = 3  # keep this small and safe
+
+    for page in range(1, pages_to_ingest + 1):
         popular = await client.get_popular_movies(page)
 
+        # Iterate over movies in the current page
         for movie in popular["results"]:
-            full = await client.get_movie_details(movie["id"])
-            await ingest_movie(full)
+            # Fetch full movie details (genres, metadata, etc.)
+            full_movie = await client.get_movie_details(movie["id"])
+            await ingest_movie(full_movie)
 
-    print("TMDB ingestion complete")
+            # Fetch and ingest credits (actors + directors)
+            credits = await client.get_movie_credits(movie["id"])
+            await ingest_credits(movie["id"], credits)
+
+    print("TMDB ingestion (movies + genres + people) complete")
 
 
 if __name__ == "__main__":

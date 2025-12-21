@@ -67,3 +67,12 @@ class TMDBClient:
 
     async def get_movie_details(self, movie_id: int) -> Dict[str, Any]:
         return await self._request("GET", f"/movie/{movie_id}")
+    
+    async def get_movie_credits(self, movie_id: int) -> Dict[str, Any]:
+        """
+        Fetch cast and crew information for a movie.
+        Used to create Person nodes and ACTED_IN / DIRECTED relationships.
+        """
+        return await self._request("GET", f"/movie/{movie_id}/credits")
+
+
