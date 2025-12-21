@@ -1,0 +1,19 @@
+CREATE CONSTRAINT movie_tmdb_id IF NOT EXISTS
+FOR (m:Movie)
+REQUIRE m.tmdb_id IS UNIQUE;
+
+CREATE CONSTRAINT person_tmdb_id IF NOT EXISTS
+FOR (p:Person)
+REQUIRE p.tmdb_id IS UNIQUE;
+
+CREATE CONSTRAINT genre_name IF NOT EXISTS
+FOR (g:Genre)
+REQUIRE g.name IS UNIQUE;
+
+CREATE CONSTRAINT keyword_name IF NOT EXISTS
+FOR (k:Keyword)
+REQUIRE k.name IS UNIQUE;
+
+CREATE CONSTRAINT country_code IF NOT EXISTS
+FOR (c:Country)
+REQUIRE c.code IS UNIQUE;
