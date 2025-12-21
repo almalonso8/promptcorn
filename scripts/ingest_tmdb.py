@@ -8,9 +8,9 @@ async def ingest_movie(movie: dict) -> None:
     """
     Ingests a single movie node and its genre relationships.
 
-    This function is idempotent:
-    - MERGE ensures no duplicate Movie nodes
-    - Genres are normalized and reused
+    Idempotent by design:
+    - Movies are uniquely identified by tmdb_id
+    - Re-running ingestion updates metadata but never duplicates nodes
     """
     run(
         """
@@ -54,11 +54,9 @@ async def ingest_credits(movie_id: int, credits: dict) -> None:
     """
     Ingests people and their relationships to a movie.
 
-    Design choices:
-    - All people are modeled as (:Person)
-    - Roles are expressed via relationships:
-        (:Person)-[:ACTED_IN]->(:Movie)
-        (:Person)-[:DIRECTED]->(:Movie)
+    Modeling rules:
+    - All humans are (:Person)
+    - Roles are expressed via relationships
     """
 
     # Cast → ACTED_IN
@@ -78,7 +76,7 @@ async def ingest_credits(movie_id: int, credits: dict) -> None:
             },
         )
 
-    # Crew → DIRECTED (only directors for now)
+    # Crew → DIRECTED (only directors in v1)
     for crew in credits.get("crew", []):
         if crew.get("job") == "Director":
             run(
@@ -97,35 +95,74 @@ async def ingest_credits(movie_id: int, credits: dict) -> None:
             )
 
 
+async def ingest_keywords(movie_id: int, keywords_payload: dict) -> None:
+    """
+    Ingests keyword nodes and connects them to a movie.
+
+    Keywords provide semantic resolution finer than genres,
+    but are still symbolic (pre-embedding).
+    """
+    for kw in keywords_payload.get("keywords", []):
+        run(
+            """
+            MERGE (k:Keyword {name: $name})
+            WITH k
+            MATCH (m:Movie {tmdb_id: $movie_id})
+            MERGE (m)-[:HAS_KEYWORD]->(k)
+            """,
+            {
+                "name": kw["name"],
+                "movie_id": movie_id,
+            },
+        )
+
+
 async def main() -> None:
     """
-    Main ingestion entry point.
+    Main TMDB ingestion entry point.
 
-    Flow:
-    - Iterate over a small number of TMDB 'popular' pages
-    - For each movie:
-        1. Fetch full movie details
-        2. Ingest Movie + Genre structure
-        3. Fetch credits
-        4. Ingest People + relationships
+    Strategy:
+    - Ingest from multiple TMDB sources to reduce bias
+    - Rely on MERGE + tmdb_id for idempotency
+    - Scale data volume BEFORE embeddings
     """
     client = TMDBClient()
-    pages_to_ingest = 3  # keep this small and safe
 
-    for page in range(1, pages_to_ingest + 1):
-        popular = await client.get_popular_movies(page)
+    # ~20 movies per page
+    # 25 pages × 3 sources ≈ 1,500 movies (with overlap)
+    pages_per_source = 25
 
-        # Iterate over movies in the current page
-        for movie in popular["results"]:
-            # Fetch full movie details (genres, metadata, etc.)
-            full_movie = await client.get_movie_details(movie["id"])
-            await ingest_movie(full_movie)
+    sources = [
+        ("popular", client.get_popular_movies),
+        ("top_rated", client.get_top_rated_movies),
+        ("trending", lambda page: client.get_trending_movies("week", page=page)),
+    ]
 
-            # Fetch and ingest credits (actors + directors)
-            credits = await client.get_movie_credits(movie["id"])
-            await ingest_credits(movie["id"], credits)
+    for source_name, fetch_fn in sources:
+        print(f"Starting ingestion from source: {source_name}")
 
-    print("TMDB ingestion (movies + genres + people) complete")
+        for page in range(1, pages_per_source + 1):
+            data = await fetch_fn(page)
+
+            # TMDB endpoints are inconsistent in shape
+            movies = data.get("results", [])
+
+            for movie in movies:
+                movie_id = movie["id"]
+
+                # Fetch full movie payload (genres, overview, etc.)
+                full_movie = await client.get_movie_details(movie_id)
+                await ingest_movie(full_movie)
+
+                # Credits → people + roles
+                credits = await client.get_movie_credits(movie_id)
+                await ingest_credits(movie_id, credits)
+
+                # Keywords → semantic enrichment
+                keywords = await client.get_movie_keywords(movie_id)
+                await ingest_keywords(movie_id, keywords)
+
+    print("TMDB ingestion complete (~1,500 movies)")
 
 
 if __name__ == "__main__":

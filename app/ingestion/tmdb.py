@@ -65,6 +65,31 @@ class TMDBClient:
     async def get_popular_movies(self, page: int = 1) -> Dict[str, Any]:
         return await self._request("GET", "/movie/popular", params={"page": page})
 
+    async def get_top_rated_movies(self, page: int = 1) -> Dict[str, Any]:
+        """
+        Fetches top-rated movies from TMDB.
+
+        This endpoint favors:
+        - critically acclaimed films
+        - classics
+        - prestige cinema
+
+        We use it to counterbalance popularity bias.
+        """
+        return await self._request(
+            "GET",
+            "/movie/top_rated",
+            params={"page": page}
+        )
+
+    async def get_trending_movies(self, time_window: str = "day", page: int = 1) -> Dict[str, Any]:
+        """
+        Fetches trending movies.
+        Time window can be 'day' or 'week'.
+        """
+        return await self._request("GET", f"/trending/movie/{time_window}", params={"page": page})
+
+
     async def get_movie_details(self, movie_id: int) -> Dict[str, Any]:
         return await self._request("GET", f"/movie/{movie_id}")
     
@@ -74,5 +99,10 @@ class TMDBClient:
         Used to create Person nodes and ACTED_IN / DIRECTED relationships.
         """
         return await self._request("GET", f"/movie/{movie_id}/credits")
-
-
+    
+    async def get_movie_keywords(self, movie_id: int) -> Dict[str, Any]:
+        """
+        Fetch keywords associated with a movie.
+        Used for semantic enrichment without ML.
+        """
+        return await self._request("GET", f"/movie/{movie_id}/keywords")
