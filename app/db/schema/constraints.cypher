@@ -17,3 +17,8 @@ REQUIRE k.name IS UNIQUE;
 CREATE CONSTRAINT country_code IF NOT EXISTS
 FOR (c:Country)
 REQUIRE c.code IS UNIQUE;
+
+CREATE CONSTRAINT award_category_event_required
+IF NOT EXISTS
+FOR (c:AwardCategory)
+REQUIRE c.event IS NOT NULL;
