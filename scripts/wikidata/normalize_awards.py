@@ -1,38 +1,32 @@
 import csv
 import json
+import pandas as pd
 from app.ingestion.wikidata_normalizer import normalize_awards
-from app.db.neo4j import run
 
-INPUT = "data/raw/wikidata_awards.jsonl"
-OUTPUT = "data/normalized/awards.csv"
-
-
-def get_release_year_map() -> dict[int, int]:
-    rows = run(
-        """
-        MATCH (m:Movie)
-        WHERE m.tmdb_id IS NOT NULL
-          AND m.release_date IS NOT NULL
-          AND m.release_date <> ""
-        RETURN
-          m.tmdb_id AS tmdb_id,
-          substring(m.release_date, 0, 4) AS year
-        """
-    )
-    return {
-        r["tmdb_id"]: int(r["year"])
-        for r in rows
-        if r["year"].isdigit()
-    }
+RAW = "data/raw/wikidata_awards.jsonl"
+FILMS = "data/normalized/films_core.parquet"
+OUT = "data/normalized/awards.csv"
 
 
 def main():
-    release_years = get_release_year_map()
+    films = pd.read_parquet(FILMS)
+    release_year = {
+        int(row.tmdb_id): int(row.release_date[:4])
+        for row in films.itertuples()
+        if isinstance(row.release_date, str) and len(row.release_date) >= 4
+    }
 
-    with open(INPUT) as fin, open(OUTPUT, "w", newline="") as fout:
+    with open(RAW) as fin, open(OUT, "w", newline="") as fout:
         writer = csv.DictWriter(
             fout,
-            fieldnames=["tmdb_id", "event", "category", "result", "year", "source"],
+            fieldnames=[
+                "tmdb_id",
+                "event",
+                "category",
+                "result",
+                "year",
+                "source",
+            ],
         )
         writer.writeheader()
 
@@ -40,7 +34,7 @@ def main():
             record = json.loads(line)
             tmdb_id = record["tmdb_id"]
 
-            if tmdb_id not in release_years:
+            if tmdb_id not in release_year:
                 continue
 
             normalized = normalize_awards(tmdb_id, record["rows"])
@@ -52,12 +46,12 @@ def main():
                         "event": award["event"],
                         "category": award["category"],
                         "result": award["result"],
-                        "year": release_years[tmdb_id],
+                        "year": release_year[tmdb_id],
                         "source": "wikidata",
                     }
                 )
 
-    print("Awards normalization complete")
+    print(f"Awards normalized → {OUT}")
 
 
 if __name__ == "__main__":

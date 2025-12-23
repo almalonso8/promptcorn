@@ -1,26 +1,17 @@
 import json
+import pandas as pd
 from app.ingestion.wikidata_client import fetch_award_rows
-from app.db.neo4j import run
 
+INPUT = "data/normalized/films_core.parquet"
 OUTPUT = "data/raw/wikidata_awards.jsonl"
 
 
-def get_tmdb_ids() -> list[int]:
-    rows = run(
-        """
-        MATCH (m:Movie)
-        WHERE m.tmdb_id IS NOT NULL
-        RETURN DISTINCT m.tmdb_id AS tmdb_id
-        """
-    )
-    return [r["tmdb_id"] for r in rows]
-
-
 def main():
-    tmdb_ids = get_tmdb_ids()
+    df = pd.read_parquet(INPUT)
+    tmdb_ids = df["tmdb_id"].dropna().astype(int).tolist()
 
     with open(OUTPUT, "w") as f:
-        for tmdb_id in tmdb_ids:
+        for idx, tmdb_id in enumerate(tmdb_ids):
             rows = fetch_award_rows(tmdb_id)
             if not rows:
                 continue
@@ -30,6 +21,9 @@ def main():
                 "rows": rows,
             }
             f.write(json.dumps(record) + "\n")
+
+            if idx % 50 == 0:
+                print(f"Processed {idx}/{len(tmdb_ids)}")
 
     print("Wikidata extraction complete")
 
