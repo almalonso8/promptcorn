@@ -1,6 +1,12 @@
 # Promptcorn 🍿
 
-Promptcorn is a graph-native movie discovery engine.
+Promptcorn is a graph-native movie discovery engine for
+
+🇺🇸 US films (dominant consumption)
+🇪🇸 Spanish films (cultural relevance)
+🌍 selected international prestige cinema
+
+Taste starts with curation, not ML.
 
 ## Core principles
 

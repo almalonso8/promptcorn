@@ -106,3 +106,30 @@ class TMDBClient:
         Used for semantic enrichment without ML.
         """
         return await self._request("GET", f"/movie/{movie_id}/keywords")
+    
+    async def discover_movies(
+        self,
+        page: int = 1,
+        language: str | None = None,
+        region: str | None = None,
+        sort_by: str = "popularity.desc",
+    ) -> dict:
+        """
+        Discover movies via TMDB /discover endpoint.
+
+        Used to intentionally sample specific subsets
+        (e.g. Spanish films for ES market relevance).
+        """
+        params = {
+            "page": page,
+            "sort_by": sort_by,
+        }
+
+        if language:
+            params["with_original_language"] = language
+
+        if region:
+            params["region"] = region
+
+        return await self._request("GET", "/discover/movie", params=params)
+

@@ -1,8 +1,43 @@
 import asyncio
+from typing import Set
 
 from app.db.neo4j import run
 from app.ingestion.tmdb import TMDBClient
 
+
+# -------------------------
+# TARGETS (v1 corpus)
+# -------------------------
+
+TARGET_TOTAL = 5000
+TARGET_SPANISH = 1200          # ~24% ES films
+MAX_PAGES_PER_SOURCE = 200     # hard safety cap
+
+
+# -------------------------
+# EXISTING MOVIES
+# -------------------------
+
+def get_existing_tmdb_ids() -> Set[int]:
+    """
+    Load all TMDB IDs already present in Neo4j.
+
+    This is the ONLY mechanism used to:
+    - avoid duplicate ingestion
+    - avoid re-fetching TMDB data
+    """
+    rows = run(
+        """
+        MATCH (m:Movie)
+        RETURN m.tmdb_id AS tmdb_id
+        """
+    )
+    return {row["tmdb_id"] for row in rows}
+
+
+# -------------------------
+# INGESTION HELPERS
+# -------------------------
 
 async def ingest_movie(movie: dict) -> None:
     """
@@ -34,7 +69,6 @@ async def ingest_movie(movie: dict) -> None:
         },
     )
 
-    # Normalize genres and connect them to the movie
     for genre in movie.get("genres", []):
         run(
             """
@@ -51,15 +85,7 @@ async def ingest_movie(movie: dict) -> None:
 
 
 async def ingest_credits(movie_id: int, credits: dict) -> None:
-    """
-    Ingests people and their relationships to a movie.
-
-    Modeling rules:
-    - All humans are (:Person)
-    - Roles are expressed via relationships
-    """
-
-    # Cast → ACTED_IN
+    """Ingest actors and directors."""
     for cast in credits.get("cast", []):
         run(
             """
@@ -76,7 +102,6 @@ async def ingest_credits(movie_id: int, credits: dict) -> None:
             },
         )
 
-    # Crew → DIRECTED (only directors in v1)
     for crew in credits.get("crew", []):
         if crew.get("job") == "Director":
             run(
@@ -96,12 +121,7 @@ async def ingest_credits(movie_id: int, credits: dict) -> None:
 
 
 async def ingest_keywords(movie_id: int, keywords_payload: dict) -> None:
-    """
-    Ingests keyword nodes and connects them to a movie.
-
-    Keywords provide semantic resolution finer than genres,
-    but are still symbolic (pre-embedding).
-    """
+    """Ingest semantic keywords."""
     for kw in keywords_payload.get("keywords", []):
         run(
             """
@@ -117,52 +137,108 @@ async def ingest_keywords(movie_id: int, keywords_payload: dict) -> None:
         )
 
 
+# -------------------------
+# STREAM INGESTION
+# -------------------------
+
+async def ingest_stream(
+    label: str,
+    fetch_fn,
+    client: TMDBClient,
+    existing_ids: Set[int],
+    quota: int,
+) -> int:
+    """
+    Generic ingestion stream with:
+    - deduplication via Neo4j state
+    - quota-based stopping
+    """
+    ingested = 0
+
+    for page in range(1, MAX_PAGES_PER_SOURCE + 1):
+        if ingested >= quota:
+            break
+
+        data = await fetch_fn(page)
+        movies = data.get("results", [])
+
+        for movie in movies:
+            movie_id = movie["id"]
+
+            if movie_id in existing_ids:
+                continue
+
+            full_movie = await client.get_movie_details(movie_id)
+            await ingest_movie(full_movie)
+
+            credits = await client.get_movie_credits(movie_id)
+            await ingest_credits(movie_id, credits)
+
+            keywords = await client.get_movie_keywords(movie_id)
+            await ingest_keywords(movie_id, keywords)
+
+            existing_ids.add(movie_id)
+            ingested += 1
+
+            if ingested >= quota:
+                break
+
+        if page % 10 == 0:
+            print(f"[{label}] page {page} → ingested {ingested}")
+
+    print(f"[{label}] completed → {ingested}")
+    return ingested
+
+
+# -------------------------
+# MAIN
+# -------------------------
+
 async def main() -> None:
-    """
-    Main TMDB ingestion entry point.
-
-    Strategy:
-    - Ingest from multiple TMDB sources to reduce bias
-    - Rely on MERGE + tmdb_id for idempotency
-    - Scale data volume BEFORE embeddings
-    """
     client = TMDBClient()
+    existing_ids = get_existing_tmdb_ids()
 
-    # ~20 movies per page
-    # 25 pages × 3 sources ≈ 1,500 movies (with overlap)
-    pages_per_source = 25
+    print(f"Already ingested: {len(existing_ids)} movies")
 
-    sources = [
-        ("popular", client.get_popular_movies),
-        ("top_rated", client.get_top_rated_movies),
-        ("trending", lambda page: client.get_trending_movies("week", page=page)),
-    ]
+    remaining = TARGET_TOTAL - len(existing_ids)
+    if remaining <= 0:
+        print("Target corpus already reached.")
+        return
 
-    for source_name, fetch_fn in sources:
-        print(f"Starting ingestion from source: {source_name}")
+    # ---- Stream 1: Spanish films (explicit)
+    spanish_quota = min(TARGET_SPANISH, remaining)
 
-        for page in range(1, pages_per_source + 1):
-            data = await fetch_fn(page)
+    async def fetch_spanish(page: int):
+        return await client.discover_movies(
+            page=page,
+            language="es",
+            region="ES",
+            sort_by="popularity.desc",
+        )
 
-            # TMDB endpoints are inconsistent in shape
-            movies = data.get("results", [])
+    ingested_es = await ingest_stream(
+        label="SPANISH",
+        fetch_fn=fetch_spanish,
+        client=client,
+        existing_ids=existing_ids,
+        quota=spanish_quota,
+    )
 
-            for movie in movies:
-                movie_id = movie["id"]
+    remaining -= ingested_es
 
-                # Fetch full movie payload (genres, overview, etc.)
-                full_movie = await client.get_movie_details(movie_id)
-                await ingest_movie(full_movie)
+    # ---- Stream 2: Global popular
+    async def fetch_popular(page: int):
+        return await client.get_popular_movies(page)
 
-                # Credits → people + roles
-                credits = await client.get_movie_credits(movie_id)
-                await ingest_credits(movie_id, credits)
+    await ingest_stream(
+        label="GLOBAL",
+        fetch_fn=fetch_popular,
+        client=client,
+        existing_ids=existing_ids,
+        quota=remaining,
+    )
 
-                # Keywords → semantic enrichment
-                keywords = await client.get_movie_keywords(movie_id)
-                await ingest_keywords(movie_id, keywords)
-
-    print("TMDB ingestion complete (~1,500 movies)")
+    print("TMDB ingestion complete")
 
 
 if __name__ == "__main__":

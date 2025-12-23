@@ -85,7 +85,7 @@ def ingest_awards(movie: dict, normalized: dict) -> None:
 
 def main() -> None:
     """
-    Wikidata award enrichment (Path A ontology).
+    Wikidata award enrichment.
 
     Safe to re-run.
     No inference.
@@ -107,7 +107,7 @@ def main() -> None:
         if idx % 50 == 0:
             print(f"Processed {idx}/{len(movies)} movies")
 
-    print("Award ingestion (Path A) complete")
+    print("Award ingestion complete")
 
 
 if __name__ == "__main__":
