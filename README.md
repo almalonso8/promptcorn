@@ -14,3 +14,6 @@ Taste starts with curation, not ML.
 - Graph relationships first, embeddings second
 - LLMs explain decisions, they do not make them
 - Every recommendation must be debuggable
+
+👉 Vector search always comes first
+👉 Graph filters always come second
