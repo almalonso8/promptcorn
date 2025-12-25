@@ -9,3 +9,6 @@ NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD")
 
 TMDB_API_KEY = os.getenv("TMDB_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-large")
+
+print("🍿 PromptCorn 🤖 API started")
